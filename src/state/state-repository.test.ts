@@ -29,26 +29,23 @@ describe("state-repository", () => {
 
   it("保存した状態を読み込める", () => {
     const state = defaultState()
-    state.participant.lastResponseId = "resp_test_123"
-    state.participant.lastResponseAt = "2026-03-01T00:00:00.000Z"
+    state.field.state = "active"
     saveState(state)
 
     const result = loadState()
-    expect(result.state.participant.lastResponseId).toBe("resp_test_123")
-    expect(result.state.participant.lastResponseAt).toBe("2026-03-01T00:00:00.000Z")
+    expect(result.state.field.state).toBe("active")
     expect(result.recoveredFromPrev).toBe(false)
   })
 
-  it("旧形式（{ lastResponseId }）からマイグレーションできる", () => {
+  it("旧形式（{ lastResponseId }）はデフォルト状態に置き換わる", () => {
+    // chain使い捨て化に伴い、旧形式のlastResponseIdは破棄される
     fs.writeFileSync(
       TEST_STATE_FILE,
       JSON.stringify({ lastResponseId: "resp_old_456", memory: { syncCursorId: "old" } }),
     )
 
     const result = loadState()
-    expect(result.state.participant.lastResponseId).toBe("resp_old_456")
-    expect(result.state.field.state).toBe("generated")
-    expect(result.state.field.messageHistory).toEqual([])
+    expect(result.state).toEqual(defaultState())
     expect(result.recoveredFromPrev).toBe(false)
   })
 
@@ -59,15 +56,12 @@ describe("state-repository", () => {
       { actor: "human", text: "こんにちは" },
       { actor: "ai", text: "はい、こんにちは" },
     ]
-    state.participant.lastResponseId = "resp_new_789"
-    state.participant.lastResponseAt = "2026-03-02T12:00:00.000Z"
     saveState(state)
 
     const result = loadState()
     expect(result.state.field.state).toBe("paused")
     expect(result.state.field.messageHistory).toHaveLength(2)
     expect(result.state.field.messageHistory[0].text).toBe("こんにちは")
-    expect(result.state.participant.lastResponseId).toBe("resp_new_789")
     expect(result.recoveredFromPrev).toBe(false)
   })
 
@@ -85,7 +79,6 @@ describe("state-repository", () => {
     // .prevに正常な状態を保存
     const prevState = defaultState()
     prevState.field.state = "paused"
-    prevState.participant.lastResponseId = "resp_prev_123"
     fs.writeFileSync(`${TEST_STATE_FILE}.prev`, JSON.stringify(prevState, null, 2))
 
     // state.jsonを破損させる
@@ -93,7 +86,6 @@ describe("state-repository", () => {
 
     const result = loadState()
     expect(result.state.field.state).toBe("paused")
-    expect(result.state.participant.lastResponseId).toBe("resp_prev_123")
     expect(result.recoveredFromPrev).toBe(true)
   })
 
@@ -107,20 +99,20 @@ describe("state-repository", () => {
 
   it("saveState: 1世代バックアップ（.prev）を作成する", () => {
     const state1 = defaultState()
-    state1.participant.lastResponseId = "resp_v1"
+    state1.field.state = "active"
     saveState(state1)
 
     const state2 = defaultState()
-    state2.participant.lastResponseId = "resp_v2"
+    state2.field.state = "paused"
     saveState(state2)
 
     // state.jsonは最新版
     const current = JSON.parse(fs.readFileSync(TEST_STATE_FILE, "utf-8"))
-    expect(current.participant.lastResponseId).toBe("resp_v2")
+    expect(current.field.state).toBe("paused")
 
     // .prevは1つ前の版
     const prev = JSON.parse(fs.readFileSync(`${TEST_STATE_FILE}.prev`, "utf-8"))
-    expect(prev.participant.lastResponseId).toBe("resp_v1")
+    expect(prev.field.state).toBe("active")
   })
 
   describe("pushMessage", () => {

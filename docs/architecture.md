@@ -424,7 +424,7 @@ Avatar Space（`AVATAR_SPACE`環境変数）外へのファイルアクセスは
 
 ### ローカル記憶（memory.jsonl）
 
-memory-log-repository.ts: MemoryRecord（id, text, reason, importance, tags, createdAt）をJSONLで追記保存。チェーン断裂時の復旧コンテキスト素材としても使用（直近10件）。
+memory-log-repository.ts: MemoryRecord（id, text, reason, importance, tags, createdAt）をJSONLで追記保存。chain使い捨て化に伴い毎回の正規コンテキスト構築素材として使用（直近10件）。
 
 ### リモート記憶（xAI Collections API）
 
@@ -454,7 +454,7 @@ AIへの転送は異常対応に必要な信号のみに限定する（フィー
 
 #### 観測の意味論分離（v0.3.1）
 
-観測イベントをAIに転送する際、`[観測: eventType]`プレフィックスを付加してAIが「観測情報であり、ユーザーの命令ではない」と認識できるようにする。APIロール上はrole:"user"のまま（OpenAI APIに"observation"ロールは存在しないため、コンテンツレベルで分離）。`sendMessage()`の`_source`引数で意味論的な識別を保持するが、ツール制限等の行動制御には使用しない（設計判断: AIの行動を入力出自で制限しない）。チェーン断裂からの復旧時（`buildRecoveryContext`）も、observation起源のメッセージには`[観測]`プレフィックスを再付与して意味論を保持する。
+観測イベントをAIに転送する際、`[観測: eventType]`プレフィックスを付加してAIが「観測情報であり、ユーザーの命令ではない」と認識できるようにする。APIロール上はrole:"user"のまま（OpenAI APIに"observation"ロールは存在しないため、コンテンツレベルで分離）。`sendMessage()`の`_source`引数で意味論的な識別を保持するが、ツール制限等の行動制御には使用しない（設計判断: AIの行動を入力出自で制限しない）。chain使い捨て化に伴い毎回の正規コンテキスト構築時（`buildCanonicalContext`）も、observation起源のメッセージには`[観測]`プレフィックスを再付与して意味論を保持する。
 
 | イベント | 条件 | AI転送（共振ON時） | Monitor表示 |
 |---------|------|-------------------|------------|
@@ -772,27 +772,23 @@ field-fsm.tsで純関数transitionとして実装。
 
 ## セッション永続化
 
-### State型（場/参与者分離）
+### State型（場のみ）
 
-state-repository.tsのState型は場側（field）と参与者側（participant）を概念分離:
+state-repository.tsのState型は場側（field）のみを保持する。参与者側のチェーンID（lastResponseId）は永続化しない（chain使い捨て化に伴い、参与者状態は呼出ごとに再構築する）:
 
 ```ts
 State = {
   schemaVersion: 1,
   field: {
     state: string,                          // FieldState（generated/active/paused/resumed/terminated）
-    messageHistory: PersistedMessage[],     // 直近120件、UI再同期+チェーン断裂復旧素材
+    messageHistory: PersistedMessage[],     // 直近120件、UI再同期+正規コンテキスト構築素材
     observationHistory: PersistedMonitorEvent[], // Roblox Monitor履歴（直近50件、UI再描画用）
     xEventHistory: PersistedMonitorEvent[],      // X Monitor履歴（直近50件、UI再描画用）
-  },
-  participant: {
-    lastResponseId: string | null,   // Grok Responses APIチェーンID
-    lastResponseAt: string | null,   // ISO8601（チェーンTTL判定用）
   },
 }
 ```
 
-旧形式 `{ lastResponseId }` からの自動マイグレーション対応。atomic write（tmp→rename）+ 1世代バックアップ（.prev）。
+旧形式 `{ lastResponseId }` / 旧 `participant` フィールドは読込時に破棄され、defaultState()で置き換わる（chainは保持しないため）。atomic write（tmp→rename）+ 1世代バックアップ（.prev）。
 
 ### 永続化の耐障害性
 
@@ -809,7 +805,6 @@ State = {
 
 - active/resumed → paused（Main終了 = 暗黙のdetach、異常終了検知）
 - terminated → 維持（attach時にresetToNewField()で新規場）
-- チェーンTTL超過（30日） → lastResponseIdをnull化
 
 ### safeDetach（ipc-handlers.ts）
 
@@ -822,20 +817,21 @@ State = {
 ### attach時の状態復元
 
 `channel.attach`ハンドラ:
-1. terminated → resetToNewField()（新規場、参与者チェーンもリセット）
+1. terminated → resetToNewField()（新規場）
 2. transition(fieldState, "attach") → generated→active / paused→resumed
 3. resumed → active自動遷移
 4. 永続化されたmessageHistoryをRendererに送信（UI再同期）
 
-### チェーン断裂の自動回復（chat-session-service.ts）
+### chain使い捨て（chat-session-service.ts）
 
-Grok Responses APIの`previous_response_id`が無効/期限切れの場合（400/404エラー）:
+Grok Responses APIの`previous_response_id`は**呼出内（attempt-local）でのみ**利用する。永続化しない。
 
-1. 断裂検知（isChainBreakError: status 400 or 404）
-2. lastResponseIdをnull化
-3. 復旧コンテキスト構築: being + memory.jsonl直近10件 + messageHistory直近20件 + 今回の入力
-4. 新チェーンで再試行（previous_response_idなし）
-5. 成功 → 新チェーンで継続。失敗 → throw → 凍結
+1. sendMessage(): 毎回 `buildCanonicalContext(being + messageHistory直近20件 + 入力)` を組み立て、`store: true` で初回呼出
+2. ツール実行ループ内では直前の`response.id`を`previous_response_id`に渡してチェーンを継続（同一呼出内のみ）
+3. 呼出が完了したらチェーンは捨てる。次回呼出は再度1から
+4. 失敗時はthrow → 凍結（断裂自動回復ロジックは不要、毎回新規チェーンのため）
+
+これによりチェーンの長期蓄積によるcontext rot・APIコスト膨張・タイムアウトを防ぐ。actor（chat/pulse/discord）が異なっても同一人格なので、正規コンテキストはactor非依存で統一されている。
 
 ## 健全性管理（⑥ IntegrityManager）
 
@@ -929,7 +925,7 @@ RECOVERY_POLICY: Record<AlertCode, { action: "continue" | "freeze" }>
 |------|-----------|
 | 設定値・環境変数 | .env + config.ts（getConfig()） |
 | ランタイム設定（テーマ・モデル・言語・共振） | data/settings.json + settings-store.ts |
-| 現在の状態（場+参与者） | data/state.json（場状態・会話履歴・チェーンID） |
+| 現在の状態（場） | data/state.json（場状態・会話履歴・観測履歴） |
 | 長期記憶 | data/memory.jsonl + xAI Collections API |
 | アプリログ | data/app.log |
 | Roblox投影ログ | data/roblox-intents.jsonl |

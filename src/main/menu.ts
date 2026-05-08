@@ -4,7 +4,6 @@
 
 import { app, Menu, type BrowserWindow, type MenuItemConstructorOptions } from "electron"
 import { getSettings, updateSettings, MODEL_CATALOG, type Theme } from "../runtime/settings-store.js"
-import { resetChainForModelSwitch } from "../runtime/field-runtime.js"
 import { setLocale, type Locale } from "../shared/i18n.js"
 import * as log from "../logger.js"
 
@@ -138,8 +137,7 @@ function onResonanceChange(enabled: boolean): void {
 
 function onModelChange(model: string): void {
   updateSettings({ model })
-  // previous_response_idはモデル間で共有不可 → チェーンリセット
-  resetChainForModelSwitch()
+  // chain使い捨て方針のため、モデル切替時のリセット処理は不要（次回sendMessageで自然に新規chainが張られる）
   log.info(`[MENU] モデル変更: ${model}`)
 }
 

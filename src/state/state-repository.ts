@@ -3,7 +3,7 @@ import * as path from "node:path"
 import { getConfig } from "../config.js"
 import type { ChannelId } from "../shared/channel.js"
 
-// --- 永続化メッセージ型（UI再同期 + チェーン断裂時の復旧素材） ---
+// --- 永続化メッセージ型（UI再同期 + 正規コンテキスト構築素材） ---
 
 export type PersistedToolCall = {
   name: string
@@ -36,15 +36,9 @@ export type FieldPersistence = {
   xEventHistory: PersistedMonitorEvent[]
 }
 
-export type ParticipantPersistence = {
-  lastResponseId: string | null
-  lastResponseAt: string | null // ISO8601。チェーン有効性判定用
-}
-
 export type State = {
   schemaVersion: 1
   field: FieldPersistence
-  participant: ParticipantPersistence
 }
 
 // --- 定数 ---
@@ -67,22 +61,14 @@ export function defaultState(): State {
       observationHistory: [],
       xEventHistory: [],
     },
-    participant: {
-      lastResponseId: null,
-      lastResponseAt: null,
-    },
   }
 }
 
-// --- マイグレーション: 旧形式 { lastResponseId } → 新形式 ---
+// --- マイグレーション: 旧形式（{ lastResponseId } / participant付き等） → 新形式 ---
+// chain使い捨て化に伴い lastResponseId/lastResponseAt は破棄する
 
-function migrateFromLegacy(obj: Record<string, unknown>): State {
-  const state = defaultState()
-  if (typeof obj.lastResponseId === "string") {
-    state.participant.lastResponseId = obj.lastResponseId
-    // 旧形式にはlastResponseAtがないためnull（起動時補正でTTLチェック不可→安全側でnull維持）
-  }
-  return state
+function migrateFromLegacy(_obj: Record<string, unknown>): State {
+  return defaultState()
 }
 
 // --- state.jsonを読み込む ---
@@ -93,10 +79,9 @@ function parseStateFile(filePath: string): State {
   const raw = fs.readFileSync(filePath, "utf-8")
   const obj = JSON.parse(raw) as Record<string, unknown>
 
-  // 新形式: schemaVersionが存在する
+  // 新形式: schemaVersionが存在する（participantフィールドが残っていても無視する＝使い捨て化）
   if (typeof obj.schemaVersion === "number" && obj.schemaVersion === CURRENT_SCHEMA_VERSION) {
     const field = obj.field as Record<string, unknown> | undefined
-    const participant = obj.participant as Record<string, unknown> | undefined
 
     return {
       schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -105,10 +90,6 @@ function parseStateFile(filePath: string): State {
         messageHistory: Array.isArray(field?.messageHistory) ? field.messageHistory as PersistedMessage[] : [],
         observationHistory: Array.isArray(field?.observationHistory) ? field.observationHistory as PersistedMonitorEvent[] : [],
         xEventHistory: Array.isArray(field?.xEventHistory) ? field.xEventHistory as PersistedMonitorEvent[] : [],
-      },
-      participant: {
-        lastResponseId: typeof participant?.lastResponseId === "string" ? participant.lastResponseId : null,
-        lastResponseAt: typeof participant?.lastResponseAt === "string" ? participant.lastResponseAt : null,
       },
     }
   }

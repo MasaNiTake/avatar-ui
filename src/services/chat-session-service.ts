@@ -88,17 +88,13 @@ function extractAvatarSayTexts(call: ToolCallInfo): string[] {
   })
 }
 
-// チェーン断裂エラーかどうか判定する（400/404 = レスポンスID無効/期限切れ）
-function isChainBreakError(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false
-  const status = (err as { status?: number }).status
-  return status === 400 || status === 404
-}
+// 会話履歴の組込件数（直近N件をinlineで毎回送る）
+const MAX_HISTORY_FOR_CONTEXT = 20
 
-// messageHistoryからResponseInput用の会話コンテキストを構築する
-// チェーン断裂時の復旧素材として使用（直近の会話を要約的に再注入）
-const MAX_RECOVERY_MESSAGES = 20
-function buildRecoveryContext(
+// canonical context: actor共通の会話文脈をinlineで構築する
+// chain使い捨て方針のため、毎回 system + memory + history + input を送る
+// observation由来のhuman発言はrecoveryPrefixで「観測だった」と分かるように復元
+function buildCanonicalContext(
   beingPrompt: string,
   history: PersistedMessage[],
   userInput: string,
@@ -120,9 +116,7 @@ function buildRecoveryContext(
   }
 
   // messageHistoryから直近の会話を復元
-  // source="observation"のメッセージは観測プレフィックスを付与して復元
-  // （AIが復旧後も「これは観測だった」と認識できるようにする）
-  const recent = history.slice(-MAX_RECOVERY_MESSAGES)
+  const recent = history.slice(-MAX_HISTORY_FOR_CONTEXT)
   for (const msg of recent) {
     const content = msg.actor === "human" && msg.source === "observation"
       ? t("obs.recoveryPrefix", msg.text)
@@ -144,15 +138,18 @@ const API_CALL_TIMEOUT_MS = 20_000
 const API_CALL_OPTIONS = { timeout: API_CALL_TIMEOUT_MS, maxRetries: 0 } as const
 
 // Responses APIにリクエストを送り、ツール呼び出しがあれば処理する
+// chain使い捨て方針: previous_response_idはツールループ内（同一sendMessage内）でのみ使用し、
+// 関数を抜けたら破棄する（state.jsonには保存しない）。actor間でchainを共有しない。
 // source/channel: InputGateでツール権限を制御
 // options.toolChoice: ツール使用ポリシー（"required"でツール呼び出し強制）
 // options.toolNames: 指定時、ツールリストをこの名前だけに絞る
+// forceSystemPromptは互換のため受けるが、毎回systemを送るので実質的な意味はない
 export async function sendMessage(
   client: OpenAI,
   state: State,
   beingPrompt: string,
   userInput: string,
-  forceSystemPrompt = false,
+  _forceSystemPrompt = false,
   source: Source = "user",
   channel: ChannelId = "console",
   inputRole: InputRole = "owner",
@@ -161,64 +158,27 @@ export async function sendMessage(
   const config = getConfig()
   // ターン開始時にモデルを固定（ツールループ中のメニュー変更で途中切替されるのを防ぐ）
   const model = getSettings().model
-  const lastResponseId = state.participant.lastResponseId
 
-  // 初回 or forceSystemPrompt: systemロール + userロール、継続: userのみ + previous_response_id
-  const input: ResponseInput =
-    lastResponseId && !forceSystemPrompt
-      ? [{ role: "user" as const, content: userInput }]
-      : [
-          { role: "system" as const, content: beingPrompt },
-          { role: "user" as const, content: userInput },
-        ]
+  // 毎回 canonical context を inline で構築（chain使い捨て方針）
+  const input = buildCanonicalContext(beingPrompt, state.field.messageHistory, userInput)
 
   let tools = buildTools(config, source, channel, inputRole)
   if (options?.toolNames) {
     tools = tools.filter((t) => "name" in t && options.toolNames!.includes(t.name as string))
   }
 
-  let response: Response
-  try {
-    response = await client.responses.create({
-      model,
-      input,
-      tools,
-      store: true,
-      ...(lastResponseId
-        ? { previous_response_id: lastResponseId }
-        : {}),
-      ...(options?.toolChoice
-        ? { tool_choice: options.toolChoice }
-        : {}),
-    }, API_CALL_OPTIONS)
-  } catch (err) {
-    // チェーン断裂検知（400/404: レスポンスIDが無効/期限切れ）
-    if (lastResponseId && isChainBreakError(err)) {
-      log.info(`[CHAIN] 断裂検知 (${lastResponseId}) — 復旧コンテキストで再試行`)
-      state.participant.lastResponseId = null
-      state.participant.lastResponseAt = null
-
-      // 復旧: being + memory + messageHistory + 今回の入力で新チェーン開始
-      const recoveryInput = buildRecoveryContext(
-        beingPrompt,
-        state.field.messageHistory,
-        userInput,
-      )
-      response = await client.responses.create({
-        model,
-        input: recoveryInput,
-        tools,
-        store: true,
-      }, API_CALL_OPTIONS)
-      log.info(`[CHAIN] 復旧成功 — 新チェーン開始 (${response.id})`)
-    } else {
-      throw err
-    }
-  }
-
-  state.participant.lastResponseId = response.id
+  let response: Response = await client.responses.create({
+    model,
+    input,
+    tools,
+    store: true,
+    ...(options?.toolChoice
+      ? { tool_choice: options.toolChoice }
+      : {}),
+  }, API_CALL_OPTIONS)
 
   // ツール呼び出しループ（Grokがツールを呼んだら処理して再送信）
+  // ループ内では previous_response_id でツール結果を繋ぐ（attempt-local）
   const allToolCalls: ToolCallInfo[] = []
   const maxToolRounds = 5
   for (let round = 0; round < maxToolRounds; round++) {
@@ -289,7 +249,6 @@ export async function sendMessage(
       store: true,
       previous_response_id: response.id,
     }, API_CALL_OPTIONS)
-    state.participant.lastResponseId = response.id
   }
 
   const text = response.output_text ?? t("noResponse")
