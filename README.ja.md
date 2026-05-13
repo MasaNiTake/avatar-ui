@@ -229,7 +229,7 @@ Studio: Pluginsタブ > Rojo > Connect。ファイル変更は自動同期され
 
 - 列幅はスプリッタードラッグで自由調整
 - ペインヘッダーのドラッグ&ドロップで位置交換
-- AUIメニュー: テーマ（Modern / Classic）、モデル（ランタイム切替）、共振（on/off）、言語（日本語 / English）
+- AUIメニュー: テーマ（Modern / Classic）、推論強度（Off / Low / Medium / High）、共振（on/off）、言語（日本語 / English）
 
 ## アバターカスタマイズ
 

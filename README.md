@@ -229,7 +229,7 @@ In Studio: Plugins tab > Rojo > Connect. File changes sync automatically.
 
 - Columns are resizable via splitter drag
 - Panes can be swapped via drag & drop on headers
-- AUI menu: Theme (Modern / Classic), Model (runtime switch), Resonance (on/off), Language (日本語 / English)
+- AUI menu: Theme (Modern / Classic), Reasoning (Off / Low / Medium / High), Resonance (on/off), Language (日本語 / English)
 
 ## Avatar Customization
 
