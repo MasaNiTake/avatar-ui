@@ -133,9 +133,38 @@ function buildCanonicalContext(
 }
 
 // API呼び出しタイムアウト（1回のresponses.createの上限）
-// SDKデフォルトは10分×3回=最大30分。fail-fast方針で20秒×リトライなしに制限
-const API_CALL_TIMEOUT_MS = 20_000
+// SDKデフォルトは10分×3回=最大30分。fail-fast方針でリトライなしに制限。
+// 60秒設定の根拠: grok-4.3 + reasoning_effort=high + 大きなペイロード（履歴+tools）で
+// 実測10〜30秒に達する場合があり、xAI公式のreasoningガイドでも長めのタイムアウトを推奨。
+const API_CALL_TIMEOUT_MS = 60_000
 const API_CALL_OPTIONS = { timeout: API_CALL_TIMEOUT_MS, maxRetries: 0 } as const
+
+// アクティブモデル（xAI 2026-05-15 で grok-4-1-fast-* が廃止、後継は単一モデル + reasoning_effort）
+const ACTIVE_MODEL = "grok-4.3" as const
+
+/**
+ * responses.create を呼び、エラー時に診断情報をログして再throwする。
+ * 切り分けに必要な情報（モデル・effort・入力サイズ・tools数）を残す。
+ */
+async function callResponsesCreate(
+  client: OpenAI,
+  params: Parameters<OpenAI["responses"]["create"]>[0],
+): Promise<Response> {
+  try {
+    return (await client.responses.create(params, API_CALL_OPTIONS)) as Response
+  } catch (err) {
+    const inputChars = typeof params.input === "string"
+      ? params.input.length
+      : JSON.stringify(params.input ?? []).length
+    const toolsCount = Array.isArray(params.tools) ? params.tools.length : 0
+    const effort = params.reasoning?.effort ?? "(unset)"
+    const message = err instanceof Error ? err.message : String(err)
+    log.error(
+      `[API_ERROR] model=${params.model} effort=${effort} input_chars=${inputChars} tools=${toolsCount} timeout_ms=${API_CALL_TIMEOUT_MS} err=${message}`,
+    )
+    throw err
+  }
+}
 
 // Responses APIにリクエストを送り、ツール呼び出しがあれば処理する
 // chain使い捨て方針: previous_response_idはツールループ内（同一sendMessage内）でのみ使用し、
@@ -156,8 +185,8 @@ export async function sendMessage(
   options?: { toolChoice?: "auto" | "required" | "none"; toolNames?: string[] },
 ): Promise<SendMessageResult> {
   const config = getConfig()
-  // ターン開始時にモデルを固定（ツールループ中のメニュー変更で途中切替されるのを防ぐ）
-  const model = getSettings().model
+  // ターン開始時に推論強度を固定（ツールループ中のメニュー変更で途中切替されるのを防ぐ）
+  const reasoning = { effort: getSettings().reasoningEffort }
 
   // 毎回 canonical context を inline で構築（chain使い捨て方針）
   const input = buildCanonicalContext(beingPrompt, state.field.messageHistory, userInput)
@@ -167,15 +196,16 @@ export async function sendMessage(
     tools = tools.filter((t) => "name" in t && options.toolNames!.includes(t.name as string))
   }
 
-  let response: Response = await client.responses.create({
-    model,
+  let response: Response = await callResponsesCreate(client, {
+    model: ACTIVE_MODEL,
+    reasoning,
     input,
     tools,
     store: true,
     ...(options?.toolChoice
       ? { tool_choice: options.toolChoice }
       : {}),
-  }, API_CALL_OPTIONS)
+  })
 
   // ツール呼び出しループ（Grokがツールを呼んだら処理して再送信）
   // ループ内では previous_response_id でツール結果を繋ぐ（attempt-local）
@@ -242,13 +272,14 @@ export async function sendMessage(
       } as ResponseInput[number])
     }
 
-    response = await client.responses.create({
-      model,
+    response = await callResponsesCreate(client, {
+      model: ACTIVE_MODEL,
+      reasoning,
       input: toolResults,
       tools,
       store: true,
       previous_response_id: response.id,
-    }, API_CALL_OPTIONS)
+    })
   }
 
   const text = response.output_text ?? t("noResponse")
