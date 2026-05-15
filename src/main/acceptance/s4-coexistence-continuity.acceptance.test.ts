@@ -1,5 +1,5 @@
 // S4: 共存連続性 — state-repository + field-runtime の永続化・復元
-// 検証: 永続化→復元、起動時補正、チェーンTTL、terminated後リセット、messageHistory復元投影
+// 検証: 永続化→復元、起動時補正、terminated後リセット、messageHistory復元投影
 // 方式: 実ファイルI/O（tmpディレクトリ）+ vi.resetModules()でMain再起動をシミュレート
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
@@ -172,7 +172,6 @@ describe("S4: 共存連続性", () => {
     writeStateJson({
       schemaVersion: 1,
       field: { state: "active", messageHistory: [] },
-      participant: { lastResponseId: "resp-123", lastResponseAt: new Date().toISOString() },
     })
 
     vi.resetModules()
@@ -188,27 +187,6 @@ describe("S4: 共存連続性", () => {
     expect(state.field.state).toBe("paused")
   })
 
-  // --- チェーンTTL超過 ---
-
-  it("チェーンTTL超過: 30日超のlastResponseAt → lastResponseId null化", async () => {
-    // 31日前のタイムスタンプでstate.jsonを作成
-    const oldDate = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString()
-    writeStateJson({
-      schemaVersion: 1,
-      field: { state: "paused", messageHistory: [] },
-      participant: { lastResponseId: "old-resp-id", lastResponseAt: oldDate },
-    })
-
-    vi.resetModules()
-    vi.clearAllMocks()
-    await setupRuntime()
-
-    // TTL超過でlastResponseIdがnull化されている
-    const state = readStateJson()
-    expect(state.participant.lastResponseId).toBeNull()
-    expect(state.participant.lastResponseAt).toBeNull()
-  })
-
   // --- terminated後リセット ---
 
   it("terminated後リセット: terminated→attach → resetToNewField → 新規場", async () => {
@@ -219,7 +197,6 @@ describe("S4: 共存連続性", () => {
         state: "terminated",
         messageHistory: [{ actor: "human", text: "旧メッセージ" }],
       },
-      participant: { lastResponseId: "old-resp", lastResponseAt: new Date().toISOString() },
     })
 
     vi.resetModules()
@@ -236,7 +213,6 @@ describe("S4: 共存連続性", () => {
     // state.jsonが新規場にリセットされている
     const state = readStateJson()
     expect(state.field.messageHistory).toEqual([])
-    expect(state.participant.lastResponseId).toBeNull()
   })
 
   // --- messageHistory復元投影 ---
@@ -252,7 +228,6 @@ describe("S4: 共存連続性", () => {
           { actor: "ai", text: "テスト応答" },
         ],
       },
-      participant: { lastResponseId: "resp-123", lastResponseAt: new Date().toISOString() },
     })
 
     vi.resetModules()

@@ -265,8 +265,9 @@ export function createConsoleHttpServer(options: ConsoleHttpOptions): ConsoleHtt
   })
 
   function start(): void {
-    httpServer.listen(port, () => {
-      log.info(`[CONSOLE_HTTP] Console UI配信開始 (http://localhost:${port})`)
+    // loopback バインド: cloudflared 等の同一ホスト上リバプロ経由でのみ到達可。LAN直撃を遮断
+    httpServer.listen(port, "127.0.0.1", () => {
+      log.info(`[CONSOLE_HTTP] Console UI配信開始 (http://127.0.0.1:${port})`)
     })
   }
 

@@ -39,9 +39,6 @@ let state: State
 let beingPrompt: string
 let initialized = false
 
-// チェーンTTL（30日）
-const CHAIN_TTL_MS = 30 * 24 * 60 * 60 * 1000
-
 // 直列キュー（同時にsendMessageを呼ばないようにする）
 // 凍結中はジョブをスキップ（検知後の安全側停止）
 // onSkip: 凍結スキップ時に呼ばれるコールバック（processStreamのPromise未解決防止用）
@@ -84,7 +81,6 @@ function loadBeing(): string {
 // --- 起動時の状態補正 ---
 // 異常終了（active/resumed）→ paused に補正
 // terminated → 維持（attach時にリセット）
-// チェーンTTL超過 → lastResponseId null化
 function correctStateOnStartup(s: State): void {
   const fs = s.field.state
 
@@ -92,16 +88,6 @@ function correctStateOnStartup(s: State): void {
   if (fs === "active" || fs === "resumed") {
     log.info(`[RUNTIME] 起動時補正: ${fs} → paused（異常終了検知）`)
     s.field.state = "paused"
-  }
-
-  // チェーンTTL超過チェック
-  if (s.participant.lastResponseId && s.participant.lastResponseAt) {
-    const elapsed = Date.now() - new Date(s.participant.lastResponseAt).getTime()
-    if (elapsed > CHAIN_TTL_MS) {
-      log.info(`[RUNTIME] チェーンTTL超過（${Math.floor(elapsed / 86400000)}日）→ lastResponseId null化`)
-      s.participant.lastResponseId = null
-      s.participant.lastResponseAt = null
-    }
   }
 }
 
@@ -136,7 +122,7 @@ export function initRuntime(): void {
   }
 
   initialized = true
-  log.info(`[RUNTIME] 初期化完了 (fieldState: ${state.field.state}, lastResponseId: ${state.participant.lastResponseId ?? "なし"})`)
+  log.info(`[RUNTIME] 初期化完了 (fieldState: ${state.field.state})`)
 }
 
 // --- 状態アクセスAPI（ipc-handlersから使用） ---
@@ -173,13 +159,6 @@ export function appendXEvent(event: PersistedMonitorEvent): void {
   persistState()
 }
 
-// 参与者のレスポンスIDを更新して永続化する
-export function updateParticipantChain(responseId: string | null): void {
-  state.participant.lastResponseId = responseId
-  state.participant.lastResponseAt = responseId ? new Date().toISOString() : null
-  persistState()
-}
-
 // terminated → 新規場にリセット（attach時に呼ばれる）
 export function resetToNewField(): void {
   log.info("[RUNTIME] terminated → 新規場にリセット")
@@ -187,10 +166,6 @@ export function resetToNewField(): void {
   state.field.messageHistory = []
   state.field.observationHistory = []
   state.field.xEventHistory = []
-  // 参与者側はリセットしない（接続契約: 参与者の意味資産は場の終了で消えない）
-  // ただしterminatedは「場の正常終了」なので、チェーンもリセットする
-  state.participant.lastResponseId = null
-  state.participant.lastResponseAt = null
   persistState()
 }
 
@@ -277,8 +252,6 @@ export function processStream(text: string, source: import("../shared/ipc-schema
       try {
         const inputWithContext = prependObservationContext(text)
         const result = await sendMessage(client, state, beingPrompt, inputWithContext, false, source, channel, inputRole)
-        // lastResponseIdはsendMessage内でstate.participant.lastResponseIdに更新済み
-        updateParticipantChain(state.participant.lastResponseId)
         resolve(result)
       } catch (err) {
         reject(err)
@@ -297,9 +270,7 @@ export function startPulses(): void {
     enqueue: (fn) => { enqueue(fn) },
     sendMessage: async (input, source, channel, options) => {
       const inputWithContext = prependObservationContext(input)
-      const result = await sendMessage(client, state, beingPrompt, inputWithContext, true, source, channel, "owner", options)
-      updateParticipantChain(state.participant.lastResponseId)
-      return result
+      return await sendMessage(client, state, beingPrompt, inputWithContext, true, source, channel, "owner", options)
     },
     emitStreamItem: (actor, text, correlationId, source, channel, toolCalls, displayText) => {
       emitStreamItem(actor, text, correlationId, source, channel, toolCalls, displayText)
@@ -405,7 +376,6 @@ export function startObservation(): void {
           const aiInput = prependObservationContext(t("obs.aiPrefix", event.type, formatted))
           log.info(`[OBSERVATION→AI] (${correlationId}) ${formatted}`)
           const result = await sendMessage(client, state, beingPrompt, aiInput, false, "observation", "roblox", robloxRole)
-          updateParticipantChain(state.participant.lastResponseId)
           log.info(`[AI→OBSERVATION] (${correlationId}) ${result.text.substring(0, 100)}`)
           emitStreamItem("ai", result.text, correlationId, "observation", "roblox", result.toolCalls, result.displayText)
         } catch (err) {
@@ -472,7 +442,6 @@ export function startXWebhook(): void {
           const aiInput = prependObservationContext(formatXEventForAI(event))
           log.info(`[X→AI] (${correlationId}) ${formatted}`)
           const result = await sendMessage(client, state, beingPrompt, aiInput, false, "observation", "x", xRole)
-          updateParticipantChain(state.participant.lastResponseId)
           log.info(`[AI→X] (${correlationId}) ${result.text.substring(0, 100)}`)
           emitStreamItem("ai", result.text, correlationId, "observation", "x", result.toolCalls, result.displayText)
           publishXToolResults(result.toolCalls)
@@ -502,16 +471,3 @@ export function stopRuntime(): void {
   stopPulses()
 }
 
-// 現在のlastResponseIdを取得（会話継続性の確認用）
-export function getLastResponseId(): string | null {
-  return state?.participant?.lastResponseId ?? null
-}
-
-// モデル切替時にチェーンをリセットする（previous_response_idはモデル間で共有不可）
-export function resetChainForModelSwitch(): void {
-  if (!initialized) return // メニュー操作がruntime初期化前に起きた場合はno-op
-  log.info("[RUNTIME] モデル変更 → チェーンリセット")
-  state.participant.lastResponseId = null
-  state.participant.lastResponseAt = null
-  persistState()
-}

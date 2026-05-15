@@ -65,10 +65,6 @@ export function mockDefaultState() {
       observationHistory: [] as Array<{ eventType: string; formatted: string; timestamp: string }>,
       xEventHistory: [] as Array<{ eventType: string; formatted: string; timestamp: string }>,
     },
-    participant: {
-      lastResponseId: null as string | null,
-      lastResponseAt: null as string | null,
-    },
   }
 }
 
