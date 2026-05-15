@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.5.3 — grok-4.3 移行 + プラグインローダー + Web UI セキュリティ強化 (2026-05-15)
+
+主目的は **xAI grok-4-1-fast-* の 2026-05-15 廃止への追従**。後継 `grok-4.3` 単一モデル + `reasoning_effort` パラメータ制御へ移行。あわせて Discord プラグイン拡張と Web UI 公開時のセキュリティを強化。
+
+### xAI grok-4.3 migration（本リリースの主目的）
+
+- **Single-model + reasoning_effort** — `grok-4-1-fast-reasoning` / `grok-4-1-fast-non-reasoning` の2モデル切替を廃止し、`grok-4.3` 固定 + `reasoning_effort` (`none` / `low` / `medium` / `high`) でAUIメニューから推論強度を切り替える形に再設計
+- **Settings schema migration** — `Settings.model` を `Settings.reasoningEffort` に置換。起動時に旧 `model` フィールド（`grok-4-1-fast-*`等）を自動マイグレーション（reasoning → low / non-reasoning → none）し、`model` キーを書き戻し時に削除（冪等）
+- **API timeout extension** — `API_CALL_TIMEOUT_MS` を 20→60秒へ。grok-4.3 + reasoning + 大ペイロードで実測 10〜30 秒に達するため
+- **Diagnostic logging** — `callResponsesCreate` ヘルパーで API エラー時に `model / effort / input_chars / tools / timeout_ms` を `[API_ERROR]` ログ出力
+- **AUI menu** — `Model` radio を `Reasoning` radio (`Off (fastest)` / `Low (default)` / `Medium` / `High`) に置換
+
+### Discord plugin loader
+
+- **AvatarCommand loader** (`src/discord/avatar-command-loader.ts`) — `$AVATAR_DIR/commands/*.{ts,mjs,js}` を起動時に動的import し、Discord スラッシュコマンドとして接続中ギルドに登録。`AvatarCommand` interface（`src/discord/avatar-command.ts`）が契約
+- **Interaction routing** — ChatInput / StringSelectMenu / ModalSubmit を `customIdPrefix` 最長一致でルーティング。`ownerOnly: true` フラグでオーナー制限
+- **Per-plugin env** — プラグインが要求する追加環境変数（例: `SELF_ANALYSIS_JOURNAL_FILE`）を `.env.example` で併記する運用
+
+### Web UI security hardening
+
+- **Loopback bind** — `console-http-server` / `session-ws-server` の `listen()` を `127.0.0.1` 固定。LAN直撃を遮断し、cloudflared 等の同一ホスト上リバプロ経由でのみ到達可能に
+- **Origin allowlist 推奨化** — `.env.example` の `SESSION_WS_ALLOWED_ORIGINS` コメントを「公開URL運用では必須」に書き換え、未設定時の CSWSH リスクを明示
+
+### Refactoring
+
+- **Chain使い捨て化** — pulse / chat 共通の正規コンテキスト構築を `buildCanonicalContext` に統一。ターン間で chain を共有せず、毎回 inline で input を組み立てる方式に変更
+- **SELF_ANALYSIS_REPO_DIR 削除** — journal 書き込みを AVATAR_SPACE 配下の rw 領域に移行。`SELF_ANALYSIS_JOURNAL_FILE`（プラグイン側の任意 env）に置き換え
+
+### Removed
+
+- `Settings.model` フィールド（自動マイグレーション）
+- `MODEL_CATALOG` / `ModelId` / `isValidModel` / `DEFAULT_MODEL` 定数
+- `SELF_ANALYSIS_REPO_DIR` 環境変数
+
 ## v0.5.2 — Headless配信のセキュリティ・性能強化 (2026-04-20)
 
 主目的は **ヘッドレス配信層の防御強化**。Web/Desktop の役割分離（capabilities / Web Terminal 非表示）は **暫定の先行実装** として含むが、本質的な軸（CP3-3 外部チャネル接続軸、CP3-4 機械接続軸）の議論は未決着。これらの設計契約は v0.5.3 以降の議論結果で見直される可能性がある。
