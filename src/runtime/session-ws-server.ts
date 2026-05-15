@@ -187,7 +187,8 @@ export function createSessionWsServer(options: SessionWsOptions): SessionWsServe
 
     // 外部HTTPサーバー使用時はlisten不要（呼び出し元が管理）
     if (!externalServer) {
-      httpServer.listen(port, () => {
+      // loopback バインド: cloudflared 等の同一ホスト上リバプロ経由でのみ到達可。LAN直撃を遮断
+      httpServer.listen(port, "127.0.0.1", () => {
         log.info(`[SESSION_WS] WebSocketサーバー起動 (port: ${port}, 認証: ${token ? "あり" : "なし"}, ${originSummary})`)
       })
     } else {
