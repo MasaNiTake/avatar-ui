@@ -13,3 +13,6 @@ tmp/
 
 # Spectra固有データ（別リポジトリで管理）
 Spectra/
+
+# Claude Code プロジェクト固有設定（ローカル管理）
+.claude/

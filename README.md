@@ -203,6 +203,7 @@ AVATAR UI uses [Rojo](https://rojo.space/) to sync Luau scripts from `roblox/` i
 2. Install the Studio plugin: `rojo plugin install`
 3. In Roblox Studio, enable **HttpService** and **Studio Access to API Services** (Game Settings > Security)
 4. Copy `roblox/modules/Config.example.luau` to `roblox/modules/Config.luau` and edit values
+5. (Optional) In `default.project.json`, change `"name"` to match your Roblox experience name
 
 ### Development workflow
 
